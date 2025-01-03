@@ -1,14 +1,11 @@
-import OpenAI from 'openai';
 import { Session as McpxSession } from '@dylibso/mcpx'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import pino from 'pino'
-import pretty from 'pino-pretty'
+import { Logger } from 'pino'
 import { xdgConfig } from 'xdg-basedir'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
-import open from 'open'
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources';
 
 export interface SessionConfig {
@@ -19,14 +16,9 @@ export interface SessionConfig {
 export interface SessionOptions {
   // TODO make required
   config?: SessionConfig;
-  openai: OpenAI;
+  logger?: Logger;
 }
 
-const logger = pino(
-  { level: process.env.LOG_LEVEL || 'info' },
-  process.env.DEV_SERVER_ORIGIN ? pretty({ colorize: true }) : process.stderr
-)
-const config = await loadConfig()
 async function loadConfig(): Promise<SessionConfig> {
   if (!xdgConfig) {
     throw new Error('need xdg_config')
@@ -46,15 +38,27 @@ async function loadConfig(): Promise<SessionConfig> {
   }
 }
 
+export interface CreateCallbackOptions {
+  messages: ChatCompletionMessageParam[];
+  tools: ChatCompletionTool[];
+}
+
+export interface HandleToolCallOptions {
+  response: ChatCompletion;
+  messages: ChatCompletionMessageParam[];
+  createCallback: (opts: CreateCallbackOptions) => Promise<ChatCompletion>;
+}
+
 export class Session {
-  #config: SessionConfig;
-  #openai: OpenAI;
+  #config?: SessionConfig;
   #session: McpxSession;
+  #logger?: Logger;
+  //@ts-ignore
   tools: ChatCompletionTool[];
 
   private constructor(opts: SessionOptions) {
-    this.#config = opts.config || config
-    this.#openai = opts.openai
+    this.#config = opts.config
+    this.#logger = opts.logger
   }
 
   static async create(opts: SessionOptions) {
@@ -63,33 +67,44 @@ export class Session {
     return s
   }
 
+  async handleCallTool(opts: any) {
+    return this.#session.handleCallTool(opts)
+  }
+
   async load() {
-    const server = new Server(
-      {
-        name: "mcpx",
+    //const config = this.#config || await loadConfig()
+    const config = this.#config || await loadConfig()
+
+    // we need an MCP client and server to get started
+    const capabilities = {
+      tools: { listChanged: true },
+      resources: { listChanged: true, subscribe: true },
+      prompts: { listChanged: true },
+    }
+    const server = new Server({
+        name: "mcpx-server",
         version: "0.0.1",
-      },
-      {
-        capabilities: {
-          tools: { listChanged: true },
-          resources: { listChanged: true, subscribe: true },
-          prompts: { listChanged: true },
-        },
-      }
-    )
+      }, { capabilities })
+    const client = new Client({
+      name: "mcpx-client",
+      version: "0.0.1",
+    }, { capabilities })
 
     this.#session = await McpxSession.attachToServer(server, {
       authentication: config.authentication,
-      logger,
-      opener: open,
-      activeProfile: this.#config.profile || 'default',
+      logger: this.#logger,
+      builtInTools: [],
+      activeProfile: config.profile || 'default',
     })
+
+    // NOTE: We don't need this because we're expecting an authed session
 
     // this.#session.onlogin = () => {
     //   this.#config.authentication = [...this.#session.client.authentication || []]
     //   void saveConfig(this.#config)
     // }
 
+    // here is some magic that creates a fake MCP bridge in memory b/w client and server
     const clientTransport = new InMemoryTransport()
     const serverTransport = new InMemoryTransport()
     // @ts-ignore
@@ -97,24 +112,11 @@ export class Session {
     // @ts-ignore
     serverTransport._otherTransport = clientTransport
 
-    const client = new Client({
-      name: "mcpx-client",
-      version: "1.0.0",
-    }, {
-      capabilities: {
-        tools: { listChanged: true },
-        resources: { listChanged: true, subscribe: true },
-        prompts: { listChanged: true },
-      },
-    });
-
     // NOTE: order important, connect server first, then client
     await server.connect(serverTransport)
     await client.connect(clientTransport)
 
-    // map mcp tool descriptions to openai
-    // TODO: skipping invalid notion tool note to fix
-    const mcpTools = (await client.listTools()).tools.filter(t => t.name != 'notion_notion_query_database')
+    const mcpTools = (await client.listTools()).tools
     this.tools = mcpTools.map(t => ({
       type: "function" as const,
       ["function"]: {
@@ -125,66 +127,4 @@ export class Session {
     }));
   }
 
-  async handleToolCalls(response: ChatCompletion, messages: ChatCompletionMessageParam[]): Promise<ChatCompletion> {
-    if (!response.choices[0]?.message) return response
-
-    // we're going to keep looping until we're out of tool calls
-    while (true) {
-      let responseMessage = response.choices[0]?.message;
-      const toolCalls = responseMessage.tool_calls
-
-      // if we have no tool calls, or are done, break the loop
-      if (!toolCalls) {
-        console.log('\nAssistant:', responseMessage.content);
-        messages.push(responseMessage);
-        return response;
-      }
-
-      // else we need to invoke the tool calls until they are all gone
-      messages.push(responseMessage);
-
-      logger.info(`Remaining tool calls: ${JSON.stringify(toolCalls)}`);
-
-      const toolPromises = toolCalls.map(async toolCall => {
-        if (toolCall.type !== 'function') {
-          logger.warn('We do not support non-function calls');
-          return;
-        }
-
-        try {
-          // process the tool call using mcpx
-          const toolResp = await this.#session.handleCallTool({
-            params: {
-              name: toolCall.function.name,
-              arguments: JSON.parse(toolCall.function.arguments),
-            }
-          });
-          messages.push({
-            role: 'tool',
-            content: JSON.stringify(toolResp),
-            tool_call_id: toolCall.id
-          });
-        } catch (e) {
-          logger.error(`Error in tool call for ${toolCall.id}: ${e}`);
-          // tell openai what the error is
-          messages.push({
-            role: 'tool',
-            content: e.toString(),
-            tool_call_id: toolCall.id
-          });
-        }
-      });
-
-      // wait for all the tool calls to finish
-      await Promise.all(toolPromises);
-
-      // TODO inherit these options from somewhere, should it instead
-      // pass in a callback?
-      response = await this.#openai.chat.completions.create({
-        model: 'gpt-4-turbo-preview',
-        messages,
-        tools: this.tools,
-      });
-    }
-  }
 }
