@@ -28,11 +28,16 @@ import McpxOpenAI from "@dylibso/mcpx-openai"
 async function main() {
     // Create your OpenAI client as normal
     const openai = new OpenAI({
-      apiKey: process.env['OPENAI_API_KEY'],
+      apiKey: String(process.env['OPENAI_API_KEY']),
     })
 
+    const sessionId = String(process.env['MCP_RUN_SESSION_ID'])
+
     // Wrap with McpxOpenAI
-    const mcpx = await McpxOpenAI.create(openai)
+    const mcpx = await McpxOpenAI.create({
+        openai,
+        sessionId,
+    })
 
     // call any tool compatible api, e.g chat completion:
     // let's ask it to evalute some javascript. If you have

@@ -5,7 +5,10 @@ import type { RequestOptions } from 'openai/core';
 import { Logger } from 'pino';
 
 export interface McpxOpenAIOptions {
-  logger: Logger
+  openai: OpenAI;
+  sessionId: string;
+  profile?: string;
+  logger?: Logger
 }
 
 // implement a wrapper around openai chat completions api
@@ -20,9 +23,19 @@ export class McpxOpenAI {
     this.#session = session
   }
 
-  static async create(openai: OpenAI, opts?: McpxOpenAIOptions) {
-    const {logger} = opts ?? {}
-    const session = await Session.create({logger})
+  static async create(opts: McpxOpenAIOptions) {
+    const {openai, logger, sessionId, profile } = opts
+    const config = {
+      authentication: [
+        ["cookie", `sessionId=${sessionId}`]
+      ] as [string, string][],
+      profile: profile ?? 'default',
+    }
+    const session = await Session.create({
+      config,
+      logger,
+    })
+
     return new McpxOpenAI(openai, session) 
   }
 

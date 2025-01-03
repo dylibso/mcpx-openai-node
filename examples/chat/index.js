@@ -17,7 +17,11 @@ const openai = new OpenAI({
 });
 
 async function main() {
-  const mcpx = await McpxOpenAI.create(openai, { logger })
+  const mcpx = await McpxOpenAI.create({
+    openai,
+    logger,
+    sessionId: process.env['MCP_RUN_SESSION_ID']
+  })
   const messages = [];
 
   console.log('Chat started. Type "exit" to quit.\n');
@@ -40,7 +44,9 @@ async function main() {
 
     let responseMessage = response.choices[0]?.message;
     console.log("\nAssistant:", responseMessage.content);
-    fs.writeFileSync('./messages.json', JSON.stringify(messages, null, 4))
+
+    // optionally write message log
+    //fs.writeFileSync('./messages.json', JSON.stringify(messages, null, 4))
   }
 }
 

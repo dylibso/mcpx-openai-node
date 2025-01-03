@@ -16,8 +16,7 @@
     "open": "^10.1.0",
     "openai": "^4.7",
     "pino": "^9.6.0",
-    "pino-pretty": "^13.0.0",
-    "xdg-basedir": "^5.1.0"
+    "pino-pretty": "^13.0.0"
   },
   "devDependencies": {
     "esbuild": "^0.24.2"

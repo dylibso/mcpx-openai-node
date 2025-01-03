@@ -3,9 +3,6 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { Logger } from 'pino'
-import { xdgConfig } from 'xdg-basedir'
-import { readFile } from 'node:fs/promises'
-import path from 'node:path'
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources';
 
 export interface SessionConfig {
@@ -14,28 +11,8 @@ export interface SessionConfig {
 }
 
 export interface SessionOptions {
-  // TODO make required
-  config?: SessionConfig;
+  config: SessionConfig;
   logger?: Logger;
-}
-
-async function loadConfig(): Promise<SessionConfig> {
-  if (!xdgConfig) {
-    throw new Error('need xdg_config')
-  }
-
-  try {
-    const source = await readFile(
-      path.join(xdgConfig, 'mcpx', 'config.json'),
-      'utf8'
-    )
-    return JSON.parse(source)
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') {
-      return {}
-    }
-    throw err
-  }
 }
 
 export interface CreateCallbackOptions {
@@ -50,7 +27,7 @@ export interface HandleToolCallOptions {
 }
 
 export class Session {
-  #config?: SessionConfig;
+  #config: SessionConfig;
   #session: McpxSession;
   #logger?: Logger;
   //@ts-ignore
@@ -72,8 +49,7 @@ export class Session {
   }
 
   async load() {
-    //const config = this.#config || await loadConfig()
-    const config = this.#config || await loadConfig()
+    const config = this.#config
 
     // we need an MCP client and server to get started
     const capabilities = {
@@ -94,7 +70,7 @@ export class Session {
       authentication: config.authentication,
       logger: this.#logger,
       builtInTools: [],
-      activeProfile: config.profile || 'default',
+      activeProfile: config.profile ?? 'default',
     })
 
     // NOTE: We don't need this because we're expecting an authed session
@@ -126,5 +102,4 @@ export class Session {
       }
     }));
   }
-
 }
