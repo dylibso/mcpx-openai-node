@@ -55,6 +55,7 @@ async function main() {
     // until there are none left
     let response = await mcpx.chatCompletionCreate({
       model: 'gpt-4o',
+      temperature: 0,
       messages,
     });
 

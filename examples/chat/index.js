@@ -39,13 +39,14 @@ async function main() {
 
     let response = await mcpx.chatCompletionCreate({
       model: 'gpt-4-turbo',
+      temperature: 0,
       messages,
     });
 
     let responseMessage = response.choices[0]?.message;
     console.log("\nAssistant:", responseMessage.content);
 
-    // optionally write message log
+    //optionally write message log
     //fs.writeFileSync('./messages.json', JSON.stringify(messages, null, 4))
   }
 }
