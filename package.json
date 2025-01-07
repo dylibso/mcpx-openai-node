@@ -4,6 +4,9 @@
   "description": "Connect your mcp.run tools to OpenAI",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "node esbuild.js"
@@ -22,3 +25,4 @@
     "esbuild": "^0.24.2"
   }
 }
+
