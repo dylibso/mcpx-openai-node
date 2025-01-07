@@ -1,16 +1,13 @@
 import { McpxOpenAI } from '@dylibso/mcpx-openai';
-import readline from 'readline'
 import OpenAI from 'openai'
 import pino from 'pino'
 import pretty from 'pino-pretty'
 import fs from "node:fs"
+import { stdin as input, stdout as output } from 'node:process';
+import readline from 'node:readline/promises';
 
+const rl = readline.createInterface({ input, output });
 const logger = pino(pretty({ colorize: true }))
-
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -42,7 +39,7 @@ Your responses should focus on results rather than asking questions. Only ask th
   console.log('Chat started. Type "exit" to quit.\n');
 
   while (true) {
-    const input = await new Promise(resolve => rl.question('You: ', resolve));
+    const input = await rl.question('You: ')
 
     if (input.toLowerCase() === 'exit') {
       console.log('Goodbye!');

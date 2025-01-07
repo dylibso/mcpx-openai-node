@@ -17,6 +17,12 @@ You just need the mcpx-openai library and the openai library (if you don't alrea
 npm install @dylibso/mcpx-openai openai --save
 ```
 
+To get an mcp.run session id, run this command and follow the instructions:
+
+```
+npx --yes -p @dylibso/mcpx@latest gen-session
+```
+
 ### Code
 
 McpxOpenAI presents as a wrapper around the [OpenAI Node](https://github.com/openai/openai-node) library.
@@ -39,11 +45,14 @@ async function main() {
         sessionId,
     })
 
+    // NOTE: consider writing a system message to guide the agent into
+    // getting the behavior you want for more complex scenarios
+    const messages = [];
+
     // call any tool compatible api, e.g chat completion:
     // let's ask it to evalute some javascript. If you have
     // this tool installed: https://www.mcp.run/bhelx/eval-js it should
     // determine and use this to evaluate it in a sandbox
-    const messages = [];
     messages.push({
       role: 'user',
       content: `
