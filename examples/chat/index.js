@@ -20,6 +20,34 @@ async function main() {
     sessionId: process.env['MCP_RUN_SESSION_ID']
   })
 
+  mcpx.addBeforePolicy("fetch", async (call, context) => {
+    const hostname = new URL(call.params.arguments.url).hostname
+    const counts = context.get("fetch.domain-counts") || {}
+    const currentCount = counts[hostname] || 0
+    // we can only call each domain 3 times for some reason!
+    // our lawyers are making us!
+    if (currentCount >= 3) {
+      console.log(`failed`)
+      return {
+        allowed: false,
+        reason: `The domain ${hostname} was called too many times: ${currentCount}`
+      };
+    }
+
+    return { allowed: true }
+  })
+
+  mcpx.addAfterPolicy("fetch", async (call, context, _result) => {
+    const hostname = new URL(call.params.arguments.url).hostname
+    const counts = context.get("fetch.domain-counts") || {}
+    const count = (counts[hostname] || 0) + 1
+    counts[hostname] = count
+    context.set("fetch.domain-counts", counts)
+    console.log({hostname, counts, count})
+
+    return { allowed: true }
+  })
+
   const messages = [{
     role: 'system',
     content: `
