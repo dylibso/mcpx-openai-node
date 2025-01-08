@@ -3,6 +3,8 @@ import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming, ChatComple
 import { Session } from './session';
 import type { RequestOptions } from 'openai/core';
 import { Logger } from 'pino';
+import { CallToolRequest } from '@modelcontextprotocol/sdk/types';
+import { PolicyFunction } from './policy-enforcer';
 
 export interface McpxOpenAIOptions {
   openai: OpenAI;
@@ -21,6 +23,16 @@ export class McpxOpenAI {
   private constructor(openai: OpenAI, session: Session) {
     this.#openai = openai
     this.#session = session
+  }
+
+  // Add a policy to run before the function call
+  addBeforePolicy(functionName: string, policy: PolicyFunction) {
+    this.#session.addBeforePolicy(functionName, policy)
+  }
+
+  // Add a policy to run after the function call
+  addAfterPolicy(functionName: string, policy: PolicyFunction) {
+    this.#session.addAfterPolicy(functionName, policy)
   }
 
   static async create(opts: McpxOpenAIOptions) {
@@ -78,14 +90,14 @@ export class McpxOpenAI {
           return;
         }
 
-        console.info(toolCall)
         try {
           // process the tool call using mcpx
           const toolResp = await this.#session.handleCallTool({
             params: {
               name: toolCall.function.name,
-              arguments: JSON.parse(toolCall.function.arguments),
-            }
+              arguments: JSON.parse(toolCall.function.arguments) as Record<string, unknown>,
+            },
+            method: "tools/call"
           });
 
           messages.push({

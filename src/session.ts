@@ -4,6 +4,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { Logger } from 'pino'
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources';
+import { CallToolRequest } from '@modelcontextprotocol/sdk/types'
+import { PolicyEnforcer, PolicyFunction } from './policy-enforcer'
 
 export interface SessionConfig {
   authentication?: [string, string][]
@@ -30,12 +32,14 @@ export class Session {
   #config: SessionConfig;
   #session: McpxSession;
   #logger?: Logger;
+  #policyEnforcer: PolicyEnforcer;
   //@ts-ignore
   tools: ChatCompletionTool[];
 
   private constructor(opts: SessionOptions) {
     this.#config = opts.config
     this.#logger = opts.logger
+    this.#policyEnforcer = new PolicyEnforcer()
   }
 
   static async create(opts: SessionOptions) {
@@ -44,8 +48,20 @@ export class Session {
     return s
   }
 
-  async handleCallTool(opts: any) {
-    return this.#session.handleCallTool(opts)
+  // Add a policy to run before the function call
+  addBeforePolicy(functionName: string, policy: PolicyFunction) {
+    this.#policyEnforcer.addBeforePolicy(functionName, policy)
+  }
+
+  // Add a policy to run after the function call
+  addAfterPolicy(functionName: string, policy: PolicyFunction) {
+    this.#policyEnforcer.addAfterPolicy(functionName, policy)
+  }
+
+  async handleCallTool(request: CallToolRequest) {
+    return this.#policyEnforcer.wrapCall(request, async (call: CallToolRequest) => {
+      return this.#session.handleCallTool(call)
+    })
   }
 
   async load() {
