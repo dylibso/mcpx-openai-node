@@ -50,7 +50,7 @@ Your responses should focus on results rather than asking questions. Only ask th
     messages.push({ role: 'user', content: input });
 
     let response = await mcpx.chatCompletionCreate({
-      model: 'gpt-4-turbo',
+      model: 'gpt-4o',
       temperature: 0,
       messages,
     });
@@ -63,19 +63,5 @@ Your responses should focus on results rather than asking questions. Only ask th
   }
 }
 
-async function runWithErrorHandling() {
-  try {
-    await main();
-  } catch (error) {
-    if (error instanceof OpenAI.APIError) {
-      console.error('OpenAI API Error:', error.message);
-      console.error('Error status:', error.status);
-      console.error('Error code:', error.code);
-      console.error('Error type:', error.type);
-    } else {
-      console.error('Unexpected error:', error);
-    }
-  }
-}
-
- runWithErrorHandling();
+await main()
+process.exit(0)
