@@ -1,14 +1,26 @@
-import OpenAI from 'openai';
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming, ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources';
-import { Session } from './session';
+import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources';
+import { Session, type SessionOptions } from '@dylibso/mcpx';
 import type { RequestOptions } from 'openai/core';
-import { Logger } from 'pino';
+import pino, { Logger } from 'pino';
+import OpenAI from 'openai';
 
-export interface McpxOpenAIOptions {
+export interface BaseMcpxOpenAIOptions {
+  logger?: Logger;
   openai: OpenAI;
-  sessionId: string;
-  profile?: string;
-  logger?: Logger
+}
+
+export type McpxOpenAIOptions = (
+  (BaseMcpxOpenAIOptions & { sessionId: string, profile?: string, sessionOptions: SessionOptions }) |
+  (BaseMcpxOpenAIOptions & { session: Session })
+)
+
+interface OpenAITool {
+  type: 'function',
+  function: {
+    name: string
+    description?: string
+    parameters?: any
+  }
 }
 
 // implement a wrapper around openai chat completions api
@@ -17,99 +29,113 @@ export interface McpxOpenAIOptions {
 export class McpxOpenAI {
   #openai: OpenAI;
   #session: Session;
+  #tools: OpenAITool[];
+  #logger: Logger;
 
-  private constructor(openai: OpenAI, session: Session) {
+  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], logger: Logger) {
     this.#openai = openai
     this.#session = session
+    this.#logger = logger
+    this.#tools = tools
+  }
+
+  async close() {
+    await this.#session.close()
   }
 
   static async create(opts: McpxOpenAIOptions) {
-    const {openai, logger, sessionId, profile } = opts
-    const config = {
-      authentication: [
-        ["cookie", `sessionId=${sessionId}`]
-      ] as [string, string][],
-      profile: profile ?? 'default',
-    }
-    const session = await Session.create({
-      config,
-      logger,
-    })
+    const { openai, logger } = opts
+    const session: Session = (
+      !('session' in opts)
+        ? new Session(Object.assign({}, {
+          authentication: [
+            ["cookie", `sessionId=${opts.sessionId}`]
+          ] as [string, string][],
+          activeProfile: opts.profile ?? 'default',
+          ...(opts.sessionOptions || {})
+        }))
+        : opts.session
+    )
 
-    return new McpxOpenAI(openai, session) 
+    const { tools: mcpTools } = await session.handleListTools({} as any, {} as any)
+    const tools = mcpTools.map((tool) => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }))
+
+    return new McpxOpenAI(openai, session, tools, logger || (session.logger as any) || pino({ level: 'silent' }))
   }
 
   async chatCompletionCreate(
     body: ChatCompletionCreateParamsNonStreaming,
     options?: RequestOptions<unknown> | undefined
   ): Promise<ChatCompletion> {
-    let { messages } = body
+    let { messages, ...rest } = body
 
-    // inherit any given tools
-    let tools = this.#session.tools
-    if (body.tools) {
-      tools = tools.concat(body.tools)
-    }
-    let tool_choice = body.tool_choice ?? 'auto'
+    let response: Awaited<ReturnType<OpenAI["chat"]["completions"]["create"]>>
+    let messageIdx = 1
+    do {
+      response = await this.#openai.chat.completions.create({
+        ...rest,
+        ...(this.#tools.length ? { tools: this.#tools } : {}),
+        messages,
+      }, options)
 
-    let response = await this.#openai.chat.completions.create({
-      tools,
-      tool_choice,
-      ...body
-    }, options)
-    if (!response.choices[0]?.message) return response
-
-    // TODO: make this auto-handling configurable
-    while (true) {
-      let responseMessage = response.choices[0]?.message;
-      const toolCalls = responseMessage.tool_calls
-      messages.push(responseMessage);
-
-      // if we have no tool calls, or are done, break the loop
-      if (!toolCalls) {
-        return response;
+      const choice = response.choices.slice(-1)[0]
+      if (!choice) {
+        break
       }
 
-      // else we need to invoke the tool calls until they are all gone
+      messages.push(choice.message)
+      if (!choice.message.tool_calls) {
+        break
+      }
 
-      const toolPromises = toolCalls.map(async toolCall => {
-        if (toolCall.type !== 'function') {
-          console.warn('We do not support non-function calls');
-          return;
+      for (; messageIdx < messages.length; ++messageIdx) {
+        this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+      }
+
+      for (const tool of choice.message.tool_calls) {
+        if (tool.type !== 'function') {
+          continue
         }
 
-        console.info(toolCall)
         try {
-          // process the tool call using mcpx
-          const toolResp = await this.#session.handleCallTool({
-            params: {
-              name: toolCall.function.name,
-              arguments: JSON.parse(toolCall.function.arguments),
-            }
-          });
+          const abortcontroller = new AbortController()
+          const result = await this.#session.handleCallTool(
+            {
+              method: 'tools/call',
+              params: {
+                name: tool.function.name,
+                arguments: JSON.parse(tool.function.arguments),
+              },
+            },
+            { signal: abortcontroller.signal }
+          )
 
           messages.push({
             role: 'tool',
-            content: JSON.stringify(toolResp),
-            tool_call_id: toolCall.id
-          });
-        } catch (e: any) {
-          console.error(`Error calling tool: ${e}`)
-          // tell openai what the error is
+            content: JSON.stringify(result),
+            tool_call_id: tool.id,
+          })
+        } catch (err: any) {
           messages.push({
             role: 'tool',
-            content: e.toString(),
-            tool_call_id: toolCall.id
-          });
+            content: err.toString(),
+            tool_call_id: tool.id,
+          })
         }
-      });
-
-      // wait for all the tool calls to finish
-      await Promise.all(toolPromises);
-
-      // call completion again with the results of the tool calls
-      response = await this.#openai.chat.completions.create({tools, ...body}, options)
+      }
+    } while (1)
+    for (; messageIdx < messages.length - 1; ++messageIdx) {
+      this.#logger.info({ exchange: messages[messageIdx] }, 'message')
     }
+    this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
+    return response
   }
 }
 
