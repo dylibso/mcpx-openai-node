@@ -10,6 +10,7 @@
   "license": "BSD-3-Clause",
   "description": "",
   "dependencies": {
+    "@dylibso/mcpx": "^0.21.0",
     "@dylibso/mcpx-openai": "file://../../",
     "openai": "^4.77.0",
     "pino": "^9.6.0",

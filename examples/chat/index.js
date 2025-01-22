@@ -55,6 +55,7 @@ Your responses should focus on results rather than asking questions. Only ask th
       messages,
     });
 
+    await new Promise(resolve => setTimeout(resolve, 100))
     let responseMessage = response.choices[0]?.message;
     console.log("\nAssistant:", responseMessage.content);
 

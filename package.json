@@ -16,12 +16,9 @@
   "author": "",
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@dylibso/mcpx": "^0.20.0",
-    "@modelcontextprotocol/sdk": "^1.0.4",
-    "open": "^10.1.0",
+    "@dylibso/mcpx": "^0.21.0",
     "openai": "^4.7",
-    "pino": "^9.6.0",
-    "pino-pretty": "^13.0.0"
+    "pino": "^9.6.0"
   },
   "devDependencies": {
     "esbuild": "^0.24.2",
