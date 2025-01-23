@@ -1,7 +1,7 @@
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources';
+import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/index.js';
 import { Session, type SessionOptions } from '@dylibso/mcpx';
 import type { RequestOptions } from 'openai/core';
-import pino, { Logger } from 'pino';
+import { pino, Logger } from 'pino';
 import OpenAI from 'openai';
 
 export interface BaseMcpxOpenAIOptions {

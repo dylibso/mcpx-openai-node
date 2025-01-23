@@ -12,9 +12,9 @@
     "build": "node esbuild.js",
     "postbuild": "npm run build:types",
     "prepare": "npm run build",
-    "build:types": "tsc --emitDeclarationOnly --outFile ./dist/types.d.ts --project tsconfig.json"
+    "build:types": "tsc --emitDeclarationOnly --project ./tsconfig.json --declaration --outDir dist"
   },
-  "types": "dist/types.d.ts",
+  "types": "dist/index.d.ts",
   "author": "",
   "license": "BSD-3-Clause",
   "dependencies": {

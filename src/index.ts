@@ -1,1 +1,1 @@
-export { McpxOpenAI } from './openai';
+export { McpxOpenAI } from './openai.ts';
