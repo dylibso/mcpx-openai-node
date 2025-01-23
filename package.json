@@ -10,6 +10,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "node esbuild.js",
+    "postbuild": "npm run build:types",
+    "prepare": "npm run build",
     "build:types": "tsc --emitDeclarationOnly --outFile ./dist/types.d.ts --project tsconfig.json"
   },
   "types": "dist/types.d.ts",
