@@ -1,1 +1,2 @@
-export { McpxOpenAI } from './openai';
+import { McpxOpenAI } from './openai';
+export { McpxOpenAI }
