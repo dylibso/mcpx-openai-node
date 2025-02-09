@@ -1,6 +1,6 @@
 {
   "name": "@dylibso/mcpx-openai",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "Connect your mcp.run tools to OpenAI",
   "type": "module",
   "main": "dist/index.js",
@@ -18,8 +18,8 @@
   "author": "",
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@dylibso/mcpx": "^0.21.0",
-    "openai": "^4.7",
+    "@dylibso/mcpx": "^0.23.0",
+    "openai": "^4.83.0",
     "pino": "^9.6.0"
   },
   "devDependencies": {
