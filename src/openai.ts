@@ -88,7 +88,12 @@ export class McpxOpenAI {
     let messageIdx = 1
     do {
       const result =
-        await this.chatCompletionStep(body, messageIdx, options)
+        await this.chatCompletionStep({
+          ...rest,
+          ...(this.#tools.length ? { tools: this.#tools } : {}),
+          messages,
+        }, messageIdx, options)
+      
       response = result.response
       messages = result.messages
       messageIdx = result.index
