@@ -93,7 +93,7 @@ export class McpxOpenAI {
           ...(this.#tools.length ? { tools: this.#tools } : {}),
           messages,
         }, messageIdx, options)
-      
+
       response = result.response
       messages = result.messages
       messageIdx = result.index
@@ -101,10 +101,6 @@ export class McpxOpenAI {
         break
       }
     } while (1)
-    for (; messageIdx < messages.length - 1; ++messageIdx) {
-      this.#logger.info({ exchange: messages[messageIdx] }, 'message')
-    }
-    this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
     return response
   }
 
@@ -113,6 +109,13 @@ export class McpxOpenAI {
     messageIdx: number,
     options?: RequestOptions<unknown> | undefined,
   ): Promise<McpxOpenAIStage> {
+    const logFinalMessage = (messageIdx: number, messages: ChatCompletionMessageParam[])=> {
+      for (; messageIdx < messages.length - 1; ++messageIdx) {
+        this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+      }
+      this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
+    }
+
     let { messages, ...rest } = body
 
     let response = await this.#openai.chat.completions.create({
@@ -123,11 +126,13 @@ export class McpxOpenAI {
 
     const choice = response.choices.slice(-1)[0]
     if (!choice) {
+      logFinalMessage(messageIdx, messages)
       return { response,  messages, index: messageIdx, done: true }
     }
 
     messages.push(choice.message)
     if (!choice.message.tool_calls) {
+      logFinalMessage(messageIdx, messages)
       return { response,  messages, index: messageIdx, done: true }
     }
 
