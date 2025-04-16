@@ -88,7 +88,7 @@ export class McpxOpenAI {
     let messageIdx = 1
     do {
       const result =
-        await this.chatCompletionStep({
+        await this.nextTurn({
           ...rest,
           ...(this.#tools.length ? { tools: this.#tools } : {}),
           messages,
@@ -104,7 +104,7 @@ export class McpxOpenAI {
     return response
   }
 
-  async chatCompletionStep(
+  async nextTurn(
     body: ChatCompletionCreateParamsNonStreaming,
     messageIdx: number,
     options?: RequestOptions<unknown> | undefined,
