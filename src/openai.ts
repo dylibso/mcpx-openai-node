@@ -1,9 +1,9 @@
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/index.js';
 import { Session, type SessionOptions } from '@dylibso/mcpx';
 import type { RequestOptions } from 'openai/core';
-import { pino, Logger } from 'pino';
+import { pino, type Logger } from 'pino';
 import OpenAI from 'openai';
-import { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
+import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
@@ -118,12 +118,18 @@ export class McpxOpenAI {
 
     let { messages, ...rest } = body
 
-    let response = await this.#openai.chat.completions.create({
-      ...rest,
-      ...(this.#tools.length ? { tools: this.#tools } : {}),
-      messages,
-    }, options)
+    let response: ChatCompletion
+    try {
+      response = await this.#openai.chat.completions.create({
+        ...rest,
+        ...(this.#tools.length ? { tools: this.#tools } : {}),
+        messages,
+      }, options)
+    } catch (err: any) {
+      throw ToolSchemaError.parse(err)
+    }
 
+    // Note: `response.choices.length` is always 1 if option `n` is 1
     const choice = response.choices.slice(-1)[0]
     if (!choice) {
       logFinalMessage(messageIdx, messages)
@@ -176,5 +182,35 @@ export class McpxOpenAI {
   }
 }
 
+export class ToolSchemaError extends Error {
+  static parse(err: any): any {
+    console.log(JSON.stringify(err))
+    const error = err?.error
+    const code = error?.code
+    if (error?.type === 'invalid_request_error' && code === 'invalid_function_parameters') {
+      // e.g. tools[0].function.parameters
+      const regex = /tools\[(\d+)\]\.function\.parameters/;
+      const match = error.param?.match(regex);
+      if (match) {
+        const index = match ? parseInt(match[1]) : -1
+        return new ToolSchemaError(err, index)
+      }
+    }
+    return err
+  }
+
+  public readonly originalError: any
+  public readonly toolIndex: number
+  constructor(error: any, index: number) {
+    super(error.message)
+
+    // Required for instanceof https://github.com/Microsoft/TypeScript-wiki/blob/master/Breaking-Changes.md#extending-built-ins-like-error-array-and-map-may-no-longer-work
+    Object.setPrototypeOf(this, ToolSchemaError.prototype);
+
+    this.originalError = error;
+    this.toolIndex = index;
+  }
+
+}
 
 
