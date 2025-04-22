@@ -203,10 +203,6 @@ export class ToolSchemaError extends Error {
   public readonly toolIndex: number
   constructor(error: any, index: number) {
     super(error.message)
-
-    // Required for instanceof https://github.com/Microsoft/TypeScript-wiki/blob/master/Breaking-Changes.md#extending-built-ins-like-error-array-and-map-may-no-longer-work
-    Object.setPrototypeOf(this, ToolSchemaError.prototype);
-
     this.originalError = error;
     this.toolIndex = index;
   }
