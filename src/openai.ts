@@ -192,7 +192,7 @@ export class ToolSchemaError extends Error {
       const regex = /tools\[(\d+)\]\.function\.parameters/;
       const match = error.param?.match(regex);
       if (match) {
-        const index = match ? parseInt(match[1]) : -1
+        const index = parseInt(match[1], 10) || -1
         return new ToolSchemaError(err, index)
       }
     }
