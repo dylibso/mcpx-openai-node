@@ -1,9 +1,8 @@
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/index.js';
+import type { ChatCompletion, ChatCompletionMessage, ChatCompletionMessageParam, ChatCompletionMessageToolCall, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/index.js';
 import { Session, type SessionOptions } from '@dylibso/mcpx';
 import type { RequestOptions } from 'openai/core';
 import { pino, type Logger } from 'pino';
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam, ChatCompletionMessageToolCall } from 'openai/resources/chat/completions'
 
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
@@ -16,10 +15,14 @@ export type McpxOpenAIOptions = (
 )
 
 export interface McpxOpenAIStage {
-  response: ChatCompletion
   messages: ChatCompletionMessageParam[]
   index: number
+  toolCallIndex?: number
   done: boolean
+}
+
+export interface McpxOpenAITurn extends McpxOpenAIStage {
+  response: ChatCompletion
 }
 
 interface OpenAITool {
@@ -104,17 +107,19 @@ export class McpxOpenAI {
     return response
   }
 
+  private logFinalMessage(messageIdx: number, messages: ChatCompletionMessageParam[]) {
+    for (; messageIdx < messages.length - 1; ++messageIdx) {
+      this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+    }
+    this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
+  }
+
+
   async nextTurn(
     body: ChatCompletionCreateParamsNonStreaming,
     messageIdx: number,
     options?: RequestOptions<unknown> | undefined,
-  ): Promise<McpxOpenAIStage> {
-    const logFinalMessage = (messageIdx: number, messages: ChatCompletionMessageParam[])=> {
-      for (; messageIdx < messages.length - 1; ++messageIdx) {
-        this.#logger.info({ exchange: messages[messageIdx] }, 'message')
-      }
-      this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
-    }
+  ): Promise<McpxOpenAITurn> {
 
     let { messages, ...rest } = body
 
@@ -132,14 +137,14 @@ export class McpxOpenAI {
     // Note: `response.choices.length` is always 1 if option `n` is 1
     const choice = response.choices.slice(-1)[0]
     if (!choice) {
-      logFinalMessage(messageIdx, messages)
+      this.logFinalMessage(messageIdx, messages)
       return { response,  messages, index: messageIdx, done: true }
     }
 
     const message = choice.message
     messages.push(message)
     if (!message.tool_calls) {
-      logFinalMessage(messageIdx, messages)
+      this.logFinalMessage(messageIdx, messages)
       return { response,  messages, index: messageIdx, done: true }
     }
 
@@ -157,7 +162,27 @@ export class McpxOpenAI {
     return { response,  messages, index: messageIdx, done: false }
   }
 
-  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
+  private async next(stage: McpxOpenAIStage): Promise<McpxOpenAIStage> {
+    const { messages, index, toolCallIndex } = stage
+
+    // Read the current message in the batch.
+    const inputMessage = messages[index]
+    if (toolCallIndex === undefined) {
+      return { messages, index, done: false }
+    }
+
+    const message = inputMessage as ChatCompletionMessage
+    const toolCalls = message.tool_calls!
+    const tool = toolCalls[toolCallIndex]
+    if (tool.type !== 'function') {
+      return { messages, index, done: false }
+    }
+
+    messages.push(await this.call(tool))
+    return { messages, index, done: false, toolCallIndex: toolCallIndex+1 }
+  }
+
+  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessage> {
     try {
       const abortcontroller = new AbortController()
       const result = await this.#session.handleCallTool(
