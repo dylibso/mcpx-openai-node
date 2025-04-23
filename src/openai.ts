@@ -3,7 +3,7 @@ import { Session, type SessionOptions } from '@dylibso/mcpx';
 import type { RequestOptions } from 'openai/core';
 import { pino, type Logger } from 'pino';
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
+import type { ChatCompletionMessageParam, ChatCompletionMessageToolCall } from 'openai/resources/chat/completions'
 
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
@@ -136,8 +136,9 @@ export class McpxOpenAI {
       return { response,  messages, index: messageIdx, done: true }
     }
 
-    messages.push(choice.message)
-    if (!choice.message.tool_calls) {
+    const message = choice.message
+    messages.push(message)
+    if (!message.tool_calls) {
       logFinalMessage(messageIdx, messages)
       return { response,  messages, index: messageIdx, done: true }
     }
@@ -146,39 +147,42 @@ export class McpxOpenAI {
       this.#logger.info({ exchange: messages[messageIdx] }, 'message')
     }
 
-    for (const tool of choice.message.tool_calls) {
+    for (const tool of message.tool_calls) {
       if (tool.type !== 'function') {
         return { response,  messages, index: messageIdx, done: false }
       }
-
-      try {
-        const abortcontroller = new AbortController()
-        const result = await this.#session.handleCallTool(
-          {
-            method: 'tools/call',
-            params: {
-              name: tool.function.name,
-              arguments: JSON.parse(tool.function.arguments),
-            },
-          },
-          { signal: abortcontroller.signal }
-        )
-
-        messages.push({
-          role: 'tool',
-          content: JSON.stringify(result),
-          tool_call_id: tool.id,
-        })
-      } catch (err: any) {
-        messages.push({
-          role: 'tool',
-          content: err.toString(),
-          tool_call_id: tool.id,
-        })
-      }
+      messages.push(await this.call(tool))
     }
 
     return { response,  messages, index: messageIdx, done: false }
+  }
+
+  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
+    try {
+      const abortcontroller = new AbortController()
+      const result = await this.#session.handleCallTool(
+        {
+          method: 'tools/call',
+          params: {
+            name: tool.function.name,
+            arguments: JSON.parse(tool.function.arguments),
+          },
+        },
+        { signal: abortcontroller.signal },
+      )
+
+      return {
+        role: 'tool',
+        content: JSON.stringify(result),
+        tool_call_id: tool.id,
+      }
+    } catch (err: any) {
+      return {
+        role: 'tool',
+        content: err.toString(),
+        tool_call_id: tool.id,
+      }
+    }
   }
 }
 
