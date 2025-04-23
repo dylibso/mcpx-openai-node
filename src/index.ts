@@ -1,1 +1,1 @@
-export { McpxOpenAI } from './openai.ts';
+export { McpxOpenAI, ToolSchemaError } from './openai.ts';
