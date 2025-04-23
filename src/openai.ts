@@ -204,13 +204,10 @@ export class McpxOpenAI {
       case 'input_wait': {
         const toolCallIndex = stage.toolCallIndex!
         const inputMessage = messages[index-1]
-        this.#logger.info({ m:"message index", index, len: messages.length })
 
         const message = inputMessage as ChatCompletionMessage
         const toolCalls = message.tool_calls!
         const tool = toolCalls[toolCallIndex]
-
-        this.#logger.info(toolCalls)
 
         if (tool.type !== 'function') {
           return { response, messages, index, status: 'pending' }
@@ -221,7 +218,7 @@ export class McpxOpenAI {
         if (nextTool >= toolCalls.length) {
           return { response, messages, index, status: 'pending' }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: toolCallIndex + 1 }
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
         }
       }
       default:
