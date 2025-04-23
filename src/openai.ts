@@ -19,6 +19,7 @@ export interface McpxOpenAIStage {
   index: number
   toolCallIndex?: number
   done: boolean
+  response?: ChatCompletion
 }
 
 export interface McpxOpenAITurn extends McpxOpenAIStage {
@@ -162,14 +163,45 @@ export class McpxOpenAI {
     return { response,  messages, index: messageIdx, done: false }
   }
 
-  private async next(stage: McpxOpenAIStage): Promise<McpxOpenAIStage> {
+  private async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
     const { messages, index, toolCallIndex } = stage
 
     // Read the current message in the batch.
-    const inputMessage = messages[index]
     if (toolCallIndex === undefined) {
-      return { messages, index, done: false }
+      let response: ChatCompletion
+      try {
+        response = await this.#openai.chat.completions.create({
+          ...config,
+          ...(this.#tools.length ? { tools: this.#tools } : {}),
+          messages,
+        }, requestOptions)
+      } catch (err: any) {
+        throw ToolSchemaError.parse(err)
+      }
+
+      // Note: `response.choices.length` is always 1 if option `n` is 1
+      const choice = response.choices.slice(-1)[0]
+      if (!choice) {
+        this.logFinalMessage(index, messages)
+        return { response,  messages, index, done: true }
+      }
+
+      const message = choice.message
+      messages.push(message)
+      if (!message.tool_calls) {
+        this.logFinalMessage(index, messages)
+        return { response,  messages, index, done: true }
+      }
+
+      let messageIdx = index
+      for (; messageIdx < messages.length; ++messageIdx) {
+        this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+      }
+
+      return { response, messages, index: messageIdx, done: false, toolCallIndex: 0 }
     }
+
+    const inputMessage = messages[index]
 
     const message = inputMessage as ChatCompletionMessage
     const toolCalls = message.tool_calls!
