@@ -14,16 +14,20 @@ export type McpxOpenAIOptions = (
   (BaseMcpxOpenAIOptions & { session: Session })
 )
 
-export interface McpxOpenAIStage {
+export interface McpxOpenAITurn {
   messages: ChatCompletionMessageParam[]
   index: number
   toolCallIndex?: number
   done: boolean
-  response?: ChatCompletion
+  response: ChatCompletion
 }
 
-export interface McpxOpenAITurn extends McpxOpenAIStage {
-  response: ChatCompletion
+export interface McpxOpenAIStage {
+  messages: ChatCompletionMessageParam[]
+  index: number
+  toolCallIndex?: number
+  status: 'ready' | 'pending' | 'input_wait'
+  response?: ChatCompletion
 }
 
 interface OpenAITool {
@@ -114,8 +118,7 @@ export class McpxOpenAI {
     }
     this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
   }
-
-
+  
   async nextTurn(
     body: ChatCompletionCreateParamsNonStreaming,
     messageIdx: number,
@@ -164,57 +167,63 @@ export class McpxOpenAI {
   }
 
   private async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
-    const { messages, index, toolCallIndex } = stage
+    const { messages, index, status } = stage
 
     // Read the current message in the batch.
-    if (toolCallIndex === undefined) {
-      let response: ChatCompletion
-      try {
-        response = await this.#openai.chat.completions.create({
-          ...config,
-          ...(this.#tools.length ? { tools: this.#tools } : {}),
-          messages,
-        }, requestOptions)
-      } catch (err: any) {
-        throw ToolSchemaError.parse(err)
-      }
+    switch (status) {
+      case 'pending': {
+        let response: ChatCompletion
+        try {
+          response = await this.#openai.chat.completions.create({
+            ...config,
+            ...(this.#tools.length ? { tools: this.#tools } : {}),
+            messages,
+          }, requestOptions)
+        } catch (err: any) {
+          throw ToolSchemaError.parse(err)
+        }
 
-      // Note: `response.choices.length` is always 1 if option `n` is 1
-      const choice = response.choices.slice(-1)[0]
-      if (!choice) {
-        this.logFinalMessage(index, messages)
-        return { response,  messages, index, done: true }
-      }
+        // Note: `response.choices.length` is always 1 if option `n` is 1
+        const choice = response.choices.slice(-1)[0]
+        if (!choice) {
+          this.logFinalMessage(index, messages)
+          return { response, messages, index, status: 'ready' }
+        }
 
-      const message = choice.message
-      messages.push(message)
-      if (!message.tool_calls) {
-        this.logFinalMessage(index, messages)
-        return { response,  messages, index, done: true }
-      }
+        const message = choice.message
+        messages.push(message)
+        // There are no tool calls.
+        if (!message.tool_calls) {
+          this.logFinalMessage(index, messages)
+          return { response, messages, index, status: 'ready' }
+        }
 
-      let messageIdx = index
-      for (; messageIdx < messages.length; ++messageIdx) {
-        this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+        let messageIdx = index
+        for (; messageIdx < messages.length; ++messageIdx) {
+          this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+        }
+        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
+      case 'input_wait': {
+        const toolCallIndex = stage.toolCallIndex!
+        const inputMessage = messages[index]
 
-      return { response, messages, index: messageIdx, done: false, toolCallIndex: 0 }
+        const message = inputMessage as ChatCompletionMessage
+        const toolCalls = message.tool_calls!
+        const tool = toolCalls[toolCallIndex]
+        if (tool.type !== 'function') {
+          return { messages, index, status: 'pending' }
+        }
+
+        messages.push(await this.call(tool))
+        return { messages, index, status: 'input_wait', toolCallIndex: toolCallIndex + 1 }
+      }
+      default:
+        throw new Error("Illegal status: " + status)
     }
-
-    const inputMessage = messages[index]
-
-    const message = inputMessage as ChatCompletionMessage
-    const toolCalls = message.tool_calls!
-    const tool = toolCalls[toolCallIndex]
-    if (tool.type !== 'function') {
-      return { messages, index, done: false }
-    }
-
-    messages.push(await this.call(tool))
-    return { messages, index, done: false, toolCallIndex: toolCallIndex+1 }
   }
 
-  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessage> {
+  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
     try {
       const abortcontroller = new AbortController()
       const result = await this.#session.handleCallTool(
