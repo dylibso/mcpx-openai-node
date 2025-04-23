@@ -163,7 +163,7 @@ export class McpxOpenAI {
     }
   }
 
-  private async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
+  async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
     const { response, messages, index, status } = stage
 
     // Read the current message in the batch.
