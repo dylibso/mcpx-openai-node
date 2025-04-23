@@ -27,7 +27,7 @@ export interface McpxOpenAIStage {
   index: number
   toolCallIndex?: number
   status: 'ready' | 'pending' | 'input_wait'
-  response?: ChatCompletion
+  response: ChatCompletion
 }
 
 interface OpenAITool {
@@ -118,7 +118,7 @@ export class McpxOpenAI {
     }
     this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
   }
-  
+
   async nextTurn(
     body: ChatCompletionCreateParamsNonStreaming,
     messageIdx: number,
@@ -167,7 +167,7 @@ export class McpxOpenAI {
   }
 
   private async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
-    const { messages, index, status } = stage
+    const { response, messages, index, status } = stage
 
     // Read the current message in the batch.
     switch (status) {
@@ -212,11 +212,11 @@ export class McpxOpenAI {
         const toolCalls = message.tool_calls!
         const tool = toolCalls[toolCallIndex]
         if (tool.type !== 'function') {
-          return { messages, index, status: 'pending' }
+          return { response, messages, index, status: 'pending' }
         }
 
         messages.push(await this.call(tool))
-        return { messages, index, status: 'input_wait', toolCallIndex: toolCallIndex + 1 }
+        return { response, messages, index, status: 'input_wait', toolCallIndex: toolCallIndex + 1 }
       }
       default:
         throw new Error("Illegal status: " + status)
