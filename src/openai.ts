@@ -127,43 +127,40 @@ export class McpxOpenAI {
 
     let { messages, ...rest } = body
 
-    let response: ChatCompletion
-    try {
-      response = await this.#openai.chat.completions.create({
-        ...rest,
-        ...(this.#tools.length ? { tools: this.#tools } : {}),
-        messages,
-      }, options)
-    } catch (err: any) {
-      throw ToolSchemaError.parse(err)
+    let stage: McpxOpenAIStage = {
+      messages,
+      index: messageIdx,
+      status: 'pending',
+      response: {} as ChatCompletion,
     }
 
-    // Note: `response.choices.length` is always 1 if option `n` is 1
-    const choice = response.choices.slice(-1)[0]
-    if (!choice) {
-      this.logFinalMessage(messageIdx, messages)
-      return { response,  messages, index: messageIdx, done: true }
+    stage = await this.next(stage, rest, options)
+    switch (stage.status) {
+      case 'ready':
+        return {
+          messages: stage.messages,
+          index: stage.index,
+          response: stage.response,
+          done: true,
+        }
+      case 'pending':
+        return {
+          messages: stage.messages,
+          index: stage.index,
+          response: stage.response,
+          done: false,
+        }
+      case 'input_wait':
+        do {
+          stage = await this.next(stage, rest, options)
+        } while (stage.status === 'input_wait')
+        return {
+          messages: stage.messages,
+          index: stage.index,
+          response: stage.response,
+          done: stage.status === 'ready',
+        }
     }
-
-    const message = choice.message
-    messages.push(message)
-    if (!message.tool_calls) {
-      this.logFinalMessage(messageIdx, messages)
-      return { response,  messages, index: messageIdx, done: true }
-    }
-
-    for (; messageIdx < messages.length; ++messageIdx) {
-      this.#logger.info({ exchange: messages[messageIdx] }, 'message')
-    }
-
-    for (const tool of message.tool_calls) {
-      if (tool.type !== 'function') {
-        return { response,  messages, index: messageIdx, done: false }
-      }
-      messages.push(await this.call(tool))
-    }
-
-    return { response,  messages, index: messageIdx, done: false }
   }
 
   private async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
