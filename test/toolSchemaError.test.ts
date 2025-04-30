@@ -69,6 +69,7 @@ describe('ToolSchemaError', () => {
       assert.strictEqual(result.originalError, originalError);
       assert.strictEqual(result.toolIndex, 2);
       assert.strictEqual(result.toolName, 'tool3');
+      assert.strictEqual(result.message, "Invalid schema for tool #2: 'tool3'\nCaused by: Original error message");
     });
   });
 
@@ -84,13 +85,13 @@ describe('ToolSchemaError', () => {
       assert.strictEqual(error.toolName, 'tool4');
     });
 
-    test('should use the error message from the original error', () => {
+    test('should include the error message from the original error', () => {
       const originalError = new Error('Test error message');
       const toolIndex = 1;
       
       const error = new ToolSchemaError(originalError, toolIndex, 'MyTool');
-      
-      assert.strictEqual(error.message, originalError.message);
+
+      assert.ok(error.message.includes(originalError.message));
     });
 
     test('should properly maintain instanceof checks', () => {
