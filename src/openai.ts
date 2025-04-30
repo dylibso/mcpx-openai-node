@@ -177,7 +177,7 @@ export class McpxOpenAI {
             messages,
           }, requestOptions)
         } catch (err: any) {
-          throw ToolSchemaError.parse(err)
+          throw ToolSchemaError.parse(err, this.#tools)
         }
 
         // Note: `response.choices.length` is always 1 if option `n` is 1
@@ -256,7 +256,7 @@ export class McpxOpenAI {
 }
 
 export class ToolSchemaError extends Error {
-  static parse(err: any): any {
+  static parse(err: any, tools: OpenAITool[]): any {
     console.log(JSON.stringify(err))
     const error = err?.error
     const code = error?.code
@@ -266,7 +266,7 @@ export class ToolSchemaError extends Error {
       const match = error.param?.match(regex);
       if (match) {
         const index = parseInt(match[1], 10) || -1
-        return new ToolSchemaError(err, index)
+        return new ToolSchemaError(err, index, tools[index].function.name)
       }
     }
     return err
@@ -274,10 +274,12 @@ export class ToolSchemaError extends Error {
 
   public readonly originalError: any
   public readonly toolIndex: number
-  constructor(error: any, index: number) {
+  public readonly toolName: string
+  constructor(error: any, index: number, name: string) {
     super(error.message)
     this.originalError = error;
     this.toolIndex = index;
+    this.toolName = name;
   }
 
 }
