@@ -1,9 +1,8 @@
-import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/index.js';
+import type { ChatCompletion, ChatCompletionMessage, ChatCompletionMessageParam, ChatCompletionMessageToolCall, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/index.js';
 import { Session, type SessionOptions } from '@dylibso/mcpx';
 import type { RequestOptions } from 'openai/core';
 import { pino, type Logger } from 'pino';
 import OpenAI from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions'
 
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
@@ -15,11 +14,20 @@ export type McpxOpenAIOptions = (
   (BaseMcpxOpenAIOptions & { session: Session })
 )
 
-export interface McpxOpenAIStage {
-  response: ChatCompletion
+export interface McpxOpenAITurn {
   messages: ChatCompletionMessageParam[]
   index: number
+  toolCallIndex?: number
   done: boolean
+  response: ChatCompletion
+}
+
+export interface McpxOpenAIStage {
+  messages: ChatCompletionMessageParam[]
+  index: number
+  toolCallIndex?: number
+  status: 'ready' | 'pending' | 'input_wait'
+  response: ChatCompletion
 }
 
 interface OpenAITool {
@@ -104,86 +112,151 @@ export class McpxOpenAI {
     return response
   }
 
+  private logFinalMessage(messageIdx: number, messages: ChatCompletionMessageParam[]) {
+    for (; messageIdx < messages.length - 1; ++messageIdx) {
+      this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+    }
+    this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
+  }
+
   async nextTurn(
     body: ChatCompletionCreateParamsNonStreaming,
     messageIdx: number,
     options?: RequestOptions<unknown> | undefined,
-  ): Promise<McpxOpenAIStage> {
-    const logFinalMessage = (messageIdx: number, messages: ChatCompletionMessageParam[])=> {
-      for (; messageIdx < messages.length - 1; ++messageIdx) {
-        this.#logger.info({ exchange: messages[messageIdx] }, 'message')
-      }
-      this.#logger.info({ lastMessage: messages[messageIdx] }, 'final message')
-    }
+  ): Promise<McpxOpenAITurn> {
 
     let { messages, ...rest } = body
 
-    let response: ChatCompletion
+    let stage: McpxOpenAIStage = {
+      messages,
+      index: messageIdx,
+      status: 'pending',
+      response: {} as ChatCompletion,
+    }
+
+    stage = await this.next(stage, rest, options)
+    switch (stage.status) {
+      case 'ready':
+        return {
+          messages: stage.messages,
+          index: stage.index,
+          response: stage.response,
+          done: true,
+        }
+      case 'pending':
+        return {
+          messages: stage.messages,
+          index: stage.index,
+          response: stage.response,
+          done: false,
+        }
+      case 'input_wait':
+        do {
+          stage = await this.next(stage, rest, options)
+        } while (stage.status === 'input_wait')
+        return {
+          messages: stage.messages,
+          index: stage.index,
+          response: stage.response,
+          done: stage.status === 'ready',
+        }
+    }
+  }
+
+  async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
+    const { response, messages, index, status } = stage
+
+    // Read the current message in the batch.
+    switch (status) {
+      case 'pending': {
+        let response: ChatCompletion
+        try {
+          response = await this.#openai.chat.completions.create({
+            ...config,
+            ...(this.#tools.length ? { tools: this.#tools } : {}),
+            messages,
+          }, requestOptions)
+        } catch (err: any) {
+          throw ToolSchemaError.parse(err, this.#tools)
+        }
+
+        // Note: `response.choices.length` is always 1 if option `n` is 1
+        const choice = response.choices.slice(-1)[0]
+        if (!choice) {
+          this.logFinalMessage(index, messages)
+          return { response, messages, index, status: 'ready' }
+        }
+
+        const message = choice.message
+        messages.push(message)
+        // There are no tool calls.
+        if (!message.tool_calls) {
+          this.logFinalMessage(index, messages)
+          return { response, messages, index, status: 'ready' }
+        }
+
+        let messageIdx = index
+        for (; messageIdx < messages.length; ++messageIdx) {
+          this.#logger.info({ exchange: messages[messageIdx] }, 'message')
+        }
+        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
+      }
+      case 'input_wait': {
+        const toolCallIndex = stage.toolCallIndex!
+        const inputMessage = messages[index-1]
+
+        const message = inputMessage as ChatCompletionMessage
+        const toolCalls = message.tool_calls!
+        const tool = toolCalls[toolCallIndex]
+
+        if (tool.type !== 'function') {
+          return { response, messages, index, status: 'pending' }
+        }
+
+        messages.push(await this.call(tool))
+        const nextTool = toolCallIndex + 1
+        if (nextTool >= toolCalls.length) {
+          return { response, messages, index, status: 'pending' }
+        } else {
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
+        }
+      }
+      default:
+        throw new Error("Illegal status: " + status)
+    }
+  }
+
+  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
     try {
-      response = await this.#openai.chat.completions.create({
-        ...rest,
-        ...(this.#tools.length ? { tools: this.#tools } : {}),
-        messages,
-      }, options)
-    } catch (err: any) {
-      throw ToolSchemaError.parse(err)
-    }
-
-    // Note: `response.choices.length` is always 1 if option `n` is 1
-    const choice = response.choices.slice(-1)[0]
-    if (!choice) {
-      logFinalMessage(messageIdx, messages)
-      return { response,  messages, index: messageIdx, done: true }
-    }
-
-    messages.push(choice.message)
-    if (!choice.message.tool_calls) {
-      logFinalMessage(messageIdx, messages)
-      return { response,  messages, index: messageIdx, done: true }
-    }
-
-    for (; messageIdx < messages.length; ++messageIdx) {
-      this.#logger.info({ exchange: messages[messageIdx] }, 'message')
-    }
-
-    for (const tool of choice.message.tool_calls) {
-      if (tool.type !== 'function') {
-        return { response,  messages, index: messageIdx, done: false }
-      }
-
-      try {
-        const abortcontroller = new AbortController()
-        const result = await this.#session.handleCallTool(
-          {
-            method: 'tools/call',
-            params: {
-              name: tool.function.name,
-              arguments: JSON.parse(tool.function.arguments),
-            },
+      const abortcontroller = new AbortController()
+      const result = await this.#session.handleCallTool(
+        {
+          method: 'tools/call',
+          params: {
+            name: tool.function.name,
+            arguments: JSON.parse(tool.function.arguments),
           },
-          { signal: abortcontroller.signal }
-        )
+        },
+        { signal: abortcontroller.signal },
+      )
 
-        messages.push({
-          role: 'tool',
-          content: JSON.stringify(result),
-          tool_call_id: tool.id,
-        })
-      } catch (err: any) {
-        messages.push({
-          role: 'tool',
-          content: err.toString(),
-          tool_call_id: tool.id,
-        })
+      return {
+        role: 'tool',
+        content: JSON.stringify(result),
+        tool_call_id: tool.id,
+      }
+    } catch (err: any) {
+      return {
+        role: 'tool',
+        content: err.toString(),
+        tool_call_id: tool.id,
       }
     }
-
-    return { response,  messages, index: messageIdx, done: false }
   }
 }
 
 export class ToolSchemaError extends Error {
-  static parse(err: any): any {
+  static parse(err: any, tools: OpenAITool[]): any {
     console.log(JSON.stringify(err))
     const error = err?.error
     const code = error?.code
@@ -193,7 +266,7 @@ export class ToolSchemaError extends Error {
       const match = error.param?.match(regex);
       if (match) {
         const index = parseInt(match[1], 10) || -1
-        return new ToolSchemaError(err, index)
+        return new ToolSchemaError(err, index, tools[index].function.name)
       }
     }
     return err
@@ -201,10 +274,12 @@ export class ToolSchemaError extends Error {
 
   public readonly originalError: any
   public readonly toolIndex: number
-  constructor(error: any, index: number) {
-    super(error.message)
+  public readonly toolName: string
+  constructor(error: any, index: number, name: string) {
+    super(`Invalid schema for tool #${index}: '${name}'\nCaused by: ${error.message}`)
     this.originalError = error;
     this.toolIndex = index;
+    this.toolName = name;
   }
 
 }
