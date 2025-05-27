@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
   openai: OpenAI;
-  resultTool?: string;
+  resultHandler?: { name: string, prompt: string };
 }
 
 export type McpxOpenAIOptions = (
@@ -48,15 +48,18 @@ export class McpxOpenAI {
   #openai: OpenAI;
   #session: Session;
   #tools: OpenAITool[];
-  #resultTool?: string
+  #resultHandler?: { name: string, prompt: string, schema?: any }
   #logger: Logger;
 
-  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], resultTool: string | undefined, logger: Logger) {
+  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], resultHandler: {
+    name: string,
+    prompt: string
+  } | undefined, logger: Logger) {
     this.#openai = openai
     this.#session = session
     this.#logger = logger
     this.#tools = tools
-    this.#resultTool = resultTool
+    this.#resultHandler = resultHandler
   }
 
   async close() {
@@ -87,7 +90,7 @@ export class McpxOpenAI {
       },
     }))
 
-    return new McpxOpenAI(openai, session, tools, opts.resultTool, logger || (session.logger as any) || pino({ level: 'silent' }))
+    return new McpxOpenAI(openai, session, tools, opts.resultHandler, logger || (session.logger as any) || pino({ level: 'silent' }))
   }
 
   async chatCompletionCreate(
@@ -175,7 +178,7 @@ export class McpxOpenAI {
       case 'pending': {
         let response: ChatCompletion
         const tool_choice =
-          lastTurn? { type: 'function', name: this.#resultTool } : 'auto'
+          lastTurn? { type: 'function', name: this.#resultHandler?.name } : 'auto'
         try {
           response = await this.#openai.chat.completions.create({
             ...config,
@@ -246,17 +249,18 @@ export class McpxOpenAI {
     // and we do not require a final tool invocation;
     // OR: it IS the last turn AND we required a final tool invocation
     // => meaning the last invocation has already occurred once we are in this state.
-    if ((!lastTurn_ && !this.#resultTool) || (lastTurn_ && this.#resultTool)) {
+    if ((!lastTurn_ && !this.#resultHandler) || (lastTurn_ && this.#resultHandler)) {
       status = 'ready'
       lastTurn_ = true
       this.logFinalMessage(index, messages)
-    } else if (!lastTurn_ && this.#resultTool) {
+    } else if (!lastTurn_ && this.#resultHandler) {
       lastTurn_ = true
       messages.push({
         role: 'user' as const,
-        content: `Invoke once the '${this.#resultTool}' to store and return the previous result. `+
-          `If some required parameters are unknown, come up with defaults. `+
-          `DO NOT invoke it again if you already returned the result.`
+        content: `Invoke once the '${this.#resultHandler.name}' to store and return the previous result. ` +
+          `If some required parameters are unknown, come up with defaults. ` +
+          `DO NOT invoke it again if you already returned the result. ` +
+          this.#resultHandler.prompt,
       })
     }
 
