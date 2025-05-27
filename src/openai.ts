@@ -7,6 +7,7 @@ import OpenAI from 'openai';
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
   openai: OpenAI;
+  resultTool?: string;
 }
 
 export type McpxOpenAIOptions = (
@@ -28,6 +29,7 @@ export interface McpxOpenAIStage {
   toolCallIndex?: number
   status: 'ready' | 'pending' | 'input_wait'
   response: ChatCompletion
+  lastTurn?: boolean
 }
 
 interface OpenAITool {
@@ -46,13 +48,15 @@ export class McpxOpenAI {
   #openai: OpenAI;
   #session: Session;
   #tools: OpenAITool[];
+  #resultTool?: string
   #logger: Logger;
 
-  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], logger: Logger) {
+  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], resultTool: string | undefined, logger: Logger) {
     this.#openai = openai
     this.#session = session
     this.#logger = logger
     this.#tools = tools
+    this.#resultTool = resultTool
   }
 
   async close() {
@@ -83,7 +87,7 @@ export class McpxOpenAI {
       },
     }))
 
-    return new McpxOpenAI(openai, session, tools, logger || (session.logger as any) || pino({ level: 'silent' }))
+    return new McpxOpenAI(openai, session, tools, opts.resultTool, logger || (session.logger as any) || pino({ level: 'silent' }))
   }
 
   async chatCompletionCreate(
@@ -164,17 +168,20 @@ export class McpxOpenAI {
   }
 
   async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
-    const { response, messages, index, status } = stage
+    const { response, messages, index, status, lastTurn } = stage
 
     // Read the current message in the batch.
     switch (status) {
       case 'pending': {
         let response: ChatCompletion
+        const tool_choice =
+          lastTurn? { type: 'function', name: this.#resultTool } : { type: 'auto' }
         try {
           response = await this.#openai.chat.completions.create({
             ...config,
             ...(this.#tools.length ? { tools: this.#tools } : {}),
             messages,
+            tool_choice
           }, requestOptions)
         } catch (err: any) {
           throw ToolSchemaError.parse(err, this.#tools)
@@ -183,23 +190,21 @@ export class McpxOpenAI {
         // Note: `response.choices.length` is always 1 if option `n` is 1
         const choice = response.choices.slice(-1)[0]
         if (!choice) {
-          this.logFinalMessage(index, messages)
-          return { response, messages, index, status: 'ready' }
+          return this.endReady(index, messages, response, lastTurn)
         }
 
         const message = choice.message
         messages.push(message)
         // There are no tool calls.
         if (!message.tool_calls) {
-          this.logFinalMessage(index, messages)
-          return { response, messages, index, status: 'ready' }
+          return this.endReady(index, messages, response, lastTurn)
         }
 
         let messageIdx = index
         for (; messageIdx < messages.length; ++messageIdx) {
           this.#logger.info({ exchange: messages[messageIdx] }, 'message')
         }
-        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
+        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0, lastTurn }
       }
       case 'input_wait': {
         const toolCallIndex = stage.toolCallIndex!
@@ -210,20 +215,52 @@ export class McpxOpenAI {
         const tool = toolCalls[toolCallIndex]
 
         if (tool.type !== 'function') {
-          return { response, messages, index, status: 'pending' }
+          return { response, messages, index, status: 'pending', lastTurn }
         }
 
         messages.push(await this.call(tool))
         const nextTool = toolCallIndex + 1
         if (nextTool >= toolCalls.length) {
-          return { response, messages, index, status: 'pending' }
+          let status: 'pending' | 'ready' = 'pending'
+          if (lastTurn) {
+            this.logFinalMessage(index, messages)
+            status = 'ready'
+          }
+          return { response, messages, index, status, lastTurn }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool, lastTurn }
         }
       }
       default:
         throw new Error("Illegal status: " + status)
     }
+  }
+
+  private endReady(index: number, messages: ChatCompletionMessageParam[], response: ChatCompletion, lastTurn: boolean | undefined): McpxOpenAIStage {
+    // this.logFinalMessage(index, messages)
+    // return { response, messages, index, status: 'ready', lastTurn }
+
+    let status: 'ready'|'pending' = 'pending'
+    let lastTurn_ = lastTurn
+    // if the previous turn was not the last,
+    // and we do not require a final tool invocation;
+    // OR: it IS the last turn AND we required a final tool invocation
+    // => meaning the last invocation has already occurred once we are in this state.
+    if ((!lastTurn_ && !this.#resultTool) || (lastTurn_ && this.#resultTool)) {
+      status = 'ready'
+      lastTurn_ = true
+      this.logFinalMessage(index, messages)
+    } else if (!lastTurn_ && this.#resultTool) {
+      lastTurn_ = true
+      messages.push({
+        role: 'user' as const,
+        content: `Invoke once the '${this.#resultTool}' to store and return the previous result. `+
+          `If some required parameters are unknown, come up with defaults. `+
+          `DO NOT invoke it again if you already returned the result.`
+      })
+    }
+
+    return { response, messages, index, status, lastTurn: lastTurn_ }
   }
 
   private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
