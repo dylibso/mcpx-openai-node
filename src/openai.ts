@@ -194,7 +194,7 @@ export class McpxOpenAI {
       case 'pending': {
         let response: ChatCompletion
         const tool_choice =
-          this.#forceTool? { type: 'function', function: { name: this.#forceTool } } : 'auto'
+          this.#forceTool && resultStatus === 'pending' ? { type: 'function', function: { name: this.#forceTool } } : 'auto'
         try {
           response = await this.#openai.chat.completions.create({
             ...config,
@@ -255,7 +255,7 @@ export class McpxOpenAI {
         const nextTool = toolCallIndex + 1
         if (nextTool >= toolCalls.length) {
           if (resultStatus === 'pending') {
-            return { response, messages, index, status: 'ready', resultStatus: 'ready' }
+            return { response, messages, index, status: 'pending', resultStatus: 'ready' }
           }
           return { response, messages, index, status: 'pending', resultStatus }
         } else {
