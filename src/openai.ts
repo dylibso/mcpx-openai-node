@@ -7,7 +7,8 @@ import OpenAI from 'openai';
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
   openai: OpenAI;
-  resultHandler?: { name: string, prompt: string };
+  forceTool?: string;
+  tools?: { name: string, description?: string, inputSchema: any }[]
 }
 
 export type McpxOpenAIOptions = (
@@ -48,18 +49,15 @@ export class McpxOpenAI {
   #openai: OpenAI;
   #session: Session;
   #tools: OpenAITool[];
-  #resultHandler?: { name: string, prompt: string, schema?: any }
+  #forceTool?: string
   #logger: Logger;
 
-  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], resultHandler: {
-    name: string,
-    prompt: string
-  } | undefined, logger: Logger) {
+  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], forceTool: string|undefined, logger: Logger) {
     this.#openai = openai
     this.#session = session
     this.#logger = logger
     this.#tools = tools
-    this.#resultHandler = resultHandler
+    this.#forceTool = forceTool
   }
 
   async close() {
@@ -80,7 +78,14 @@ export class McpxOpenAI {
         : opts.session
     )
 
-    const { tools: mcpTools } = await session.handleListTools({} as any, {} as any)
+    let mcpTools: any[]
+    if (Array.isArray(opts.tools)) {
+        mcpTools = opts.tools
+    } else {
+      const tools = await session.handleListTools({} as any, {} as any)
+      mcpTools = tools.tools
+    }
+
     const tools = mcpTools.map((tool) => ({
       type: 'function' as const,
       function: {
@@ -90,7 +95,7 @@ export class McpxOpenAI {
       },
     }))
 
-    return new McpxOpenAI(openai, session, tools, opts.resultHandler, logger || (session.logger as any) || pino({ level: 'silent' }))
+    return new McpxOpenAI(openai, session, tools, opts.forceTool, logger || (session.logger as any) || pino({ level: 'silent' }))
   }
 
   async chatCompletionCreate(
@@ -171,14 +176,14 @@ export class McpxOpenAI {
   }
 
   async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
-    const { response, messages, index, status, lastTurn } = stage
+    const { response, messages, index, status } = stage
 
     // Read the current message in the batch.
     switch (status) {
       case 'pending': {
         let response: ChatCompletion
         const tool_choice =
-          lastTurn? { type: 'function', name: this.#resultHandler?.name } : 'auto'
+          this.#forceTool? { type: 'function', name: this.#forceTool } : 'auto'
         try {
           response = await this.#openai.chat.completions.create({
             ...config,
@@ -193,21 +198,23 @@ export class McpxOpenAI {
         // Note: `response.choices.length` is always 1 if option `n` is 1
         const choice = response.choices.slice(-1)[0]
         if (!choice) {
-          return this.endReady(index, messages, response, lastTurn)
+          this.logFinalMessage(index, messages)
+          return { response, messages, index, status: 'ready' }
         }
 
         const message = choice.message
         messages.push(message)
         // There are no tool calls.
         if (!message.tool_calls) {
-          return this.endReady(index, messages, response, lastTurn)
+          this.logFinalMessage(index, messages)
+          return { response, messages, index, status: 'ready' }
         }
 
         let messageIdx = index
         for (; messageIdx < messages.length; ++messageIdx) {
           this.#logger.info({ exchange: messages[messageIdx] }, 'message')
         }
-        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0, lastTurn }
+        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
       case 'input_wait': {
         const toolCallIndex = stage.toolCallIndex!
@@ -218,53 +225,20 @@ export class McpxOpenAI {
         const tool = toolCalls[toolCallIndex]
 
         if (tool.type !== 'function') {
-          return { response, messages, index, status: 'pending', lastTurn }
+          return { response, messages, index, status: 'pending' }
         }
 
         messages.push(await this.call(tool))
         const nextTool = toolCallIndex + 1
         if (nextTool >= toolCalls.length) {
-          let status: 'pending' | 'ready' = 'pending'
-          if (lastTurn) {
-            this.logFinalMessage(index, messages)
-            status = 'ready'
-          }
-          return { response, messages, index, status, lastTurn }
+          return { response, messages, index, status: 'pending' }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool, lastTurn }
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
         }
       }
       default:
         throw new Error("Illegal status: " + status)
     }
-  }
-
-  private endReady(index: number, messages: ChatCompletionMessageParam[], response: ChatCompletion, lastTurn: boolean | undefined): McpxOpenAIStage {
-    // this.logFinalMessage(index, messages)
-    // return { response, messages, index, status: 'ready', lastTurn }
-
-    let status: 'ready'|'pending' = 'pending'
-    let lastTurn_ = lastTurn
-    // if the previous turn was not the last,
-    // and we do not require a final tool invocation;
-    // OR: it IS the last turn AND we required a final tool invocation
-    // => meaning the last invocation has already occurred once we are in this state.
-    if ((!lastTurn_ && !this.#resultHandler) || (lastTurn_ && this.#resultHandler)) {
-      status = 'ready'
-      lastTurn_ = true
-      this.logFinalMessage(index, messages)
-    } else if (!lastTurn_ && this.#resultHandler) {
-      lastTurn_ = true
-      messages.push({
-        role: 'user' as const,
-        content: `Invoke once the '${this.#resultHandler.name}' to store and return the previous result. ` +
-          `If some required parameters are unknown, come up with defaults. ` +
-          `DO NOT invoke it again if you already returned the result. ` +
-          this.#resultHandler.prompt,
-      })
-    }
-
-    return { response, messages, index, status, lastTurn: lastTurn_ }
   }
 
   private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
