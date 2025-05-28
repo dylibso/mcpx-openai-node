@@ -194,7 +194,7 @@ export class McpxOpenAI {
       case 'pending': {
         let response: ChatCompletion
         const tool_choice =
-          this.#forceTool? { type: 'function', name: this.#forceTool } : 'auto'
+          this.#forceTool? { type: 'function', function: { name: this.#forceTool } } : 'auto'
         try {
           response = await this.#openai.chat.completions.create({
             ...config,
