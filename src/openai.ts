@@ -254,6 +254,9 @@ export class McpxOpenAI {
         messages.push(await this.call(tool))
         const nextTool = toolCallIndex + 1
         if (nextTool >= toolCalls.length) {
+          if (resultStatus === 'pending') {
+            return { response, messages, index, status: 'ready', resultStatus: 'ready' }
+          }
           return { response, messages, index, status: 'pending', resultStatus }
         } else {
           return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool, resultStatus }
