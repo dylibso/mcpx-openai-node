@@ -24,13 +24,23 @@ export interface McpxOpenAITurn {
   response: ChatCompletion
 }
 
+// Note: valid states are:
+//
+// |   status   | resultStatus |  notes
+// |------------|--------------|-------------------
+// | ready      |   ready      | done
+// | pending    |   wait       | normal processing
+// | pending    |   pending    | normal processing done, processing the result
+// | input_wait |   wait       | normal processing
+// | input_wait |   pending    | normal processing done, processing the result
+//
 export interface McpxOpenAIStage {
   messages: ChatCompletionMessageParam[]
   index: number
   toolCallIndex?: number
   status: 'ready' | 'pending' | 'input_wait'
+  resultStatus: 'pending' | 'ready' | 'wait'
   response: ChatCompletion
-  lastTurn?: boolean
 }
 
 interface OpenAITool {
@@ -143,6 +153,7 @@ export class McpxOpenAI {
       messages,
       index: messageIdx,
       status: 'pending',
+      resultStatus: 'wait',
       response: {} as ChatCompletion,
     }
 
@@ -170,13 +181,13 @@ export class McpxOpenAI {
           messages: stage.messages,
           index: stage.index,
           response: stage.response,
-          done: stage.status === 'ready',
+          done: stage.status === 'ready' && stage.resultStatus === 'ready',
         }
     }
   }
 
-  async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
-    const { response, messages, index, status } = stage
+  async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions): Promise<McpxOpenAIStage> {
+    const { response, messages, index, status, resultStatus } = stage
 
     // Read the current message in the batch.
     switch (status) {
@@ -199,7 +210,13 @@ export class McpxOpenAI {
         const choice = response.choices.slice(-1)[0]
         if (!choice) {
           this.logFinalMessage(index, messages)
-          return { response, messages, index, status: 'ready' }
+          let statusReady: any = 'ready'
+          let resultReady: any = 'ready'
+          if (resultStatus === 'wait') {
+            statusReady = 'pending'
+            resultReady = 'pending'
+          }
+          return { response, messages, index, status: statusReady, resultStatus: resultReady }
         }
 
         const message = choice.message
@@ -207,14 +224,20 @@ export class McpxOpenAI {
         // There are no tool calls.
         if (!message.tool_calls) {
           this.logFinalMessage(index, messages)
-          return { response, messages, index, status: 'ready' }
+          let statusReady: any = 'ready'
+          let resultReady: any = 'ready'
+          if (resultStatus === 'wait') {
+            statusReady = 'pending'
+            resultReady = 'pending'
+          }
+          return { response, messages, index, status: statusReady, resultStatus: resultReady }
         }
 
         let messageIdx = index
         for (; messageIdx < messages.length; ++messageIdx) {
           this.#logger.info({ exchange: messages[messageIdx] }, 'message')
         }
-        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
+        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0, resultStatus }
       }
       case 'input_wait': {
         const toolCallIndex = stage.toolCallIndex!
@@ -225,15 +248,15 @@ export class McpxOpenAI {
         const tool = toolCalls[toolCallIndex]
 
         if (tool.type !== 'function') {
-          return { response, messages, index, status: 'pending' }
+          return { response, messages, index, status: 'pending', resultStatus }
         }
 
         messages.push(await this.call(tool))
         const nextTool = toolCallIndex + 1
         if (nextTool >= toolCalls.length) {
-          return { response, messages, index, status: 'pending' }
+          return { response, messages, index, status: 'pending', resultStatus }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool, resultStatus }
         }
       }
       default:
