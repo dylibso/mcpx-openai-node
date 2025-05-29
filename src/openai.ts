@@ -199,20 +199,13 @@ export class McpxOpenAI {
         return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
       case 'input_wait': {
-        const toolCallIndex = stage.toolCallIndex!
-        const inputMessage = messages[index-1]
-
-        const message = inputMessage as ChatCompletionMessage
-        const toolCalls = message.tool_calls!
-        const tool = toolCalls[toolCallIndex]
-
-        if (tool.type !== 'function') {
+        const { tool, toolCallIndex, toolCallLength, toolCallId } = this.parseNextToolCall(stage)
+        if (!tool) {
           return { response, messages, index, status: 'pending' }
         }
-
-        messages.push(await this.call(tool))
-        const nextTool = toolCallIndex + 1
-        if (nextTool >= toolCalls.length) {
+        messages.push(await this.call(tool, toolCallId!))
+        const nextTool = toolCallIndex! + 1
+        if (nextTool >= toolCallLength!) {
           return { response, messages, index, status: 'pending' }
         } else {
           return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
@@ -223,30 +216,44 @@ export class McpxOpenAI {
     }
   }
 
-  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
+  parseNextToolCall(stage: McpxOpenAIStage) {
+    const { status, messages, index } = stage
+    if (status !== 'input_wait') {
+      throw new Error("Cannot parse next tool call: invalid status " + status)
+    }
+    const toolCallIndex = stage.toolCallIndex!
+    const inputMessage = messages[index-1]
+
+    const message = inputMessage as ChatCompletionMessage
+    const toolCalls = message.tool_calls!
+    const tool = toolCalls[toolCallIndex]
+
+    if (tool.type !== 'function') {
+      return {}
+    }
+
+    const nextTool = toolCallIndex + 1
+    return { tool: openAIToolCallToMcpxToolCall(tool), toolCallIndex: nextTool, toolCallLength: toolCalls.length, toolCallId: tool.id }
+  }
+
+  private async call(convertedToolCall: any, toolCallId: string): Promise<ChatCompletionMessageParam> {
     try {
       const abortcontroller = new AbortController()
       const result = await this.#session.handleCallTool(
-        {
-          method: 'tools/call',
-          params: {
-            name: tool.function.name,
-            arguments: JSON.parse(tool.function.arguments),
-          },
-        },
+        convertedToolCall,
         { signal: abortcontroller.signal },
       )
 
       return {
         role: 'tool',
         content: JSON.stringify(result),
-        tool_call_id: tool.id,
+        tool_call_id: toolCallId,
       }
     } catch (err: any) {
       return {
         role: 'tool',
         content: err.toString(),
-        tool_call_id: tool.id,
+        tool_call_id: toolCallId,
       }
     }
   }
@@ -259,6 +266,16 @@ function mcpxToolToOpenai(tool: any) {
       name: tool.name,
       description: tool.description,
       parameters: tool.inputSchema,
+    },
+  }
+}
+
+function openAIToolCallToMcpxToolCall(tool: ChatCompletionMessageToolCall): any {
+  return {
+    method: 'tools/call',
+    params: {
+      name: tool.function.name,
+      arguments: JSON.parse(tool.function.arguments),
     },
   }
 }
