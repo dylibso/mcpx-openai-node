@@ -7,8 +7,6 @@ import OpenAI from 'openai';
 export interface BaseMcpxOpenAIOptions {
   logger?: Logger;
   openai: OpenAI;
-  forceTool?: string;
-  tools?: { name: string, description?: string, inputSchema: any }[]
 }
 
 export type McpxOpenAIOptions = (
@@ -24,22 +22,11 @@ export interface McpxOpenAITurn {
   response: ChatCompletion
 }
 
-// Note: valid states are:
-//
-// |   status   | resultStatus |  notes
-// |------------|--------------|-------------------
-// | ready      |   ready      | done
-// | pending    |   wait       | normal processing
-// | pending    |   pending    | normal processing done, processing the result
-// | input_wait |   wait       | normal processing
-// | input_wait |   pending    | normal processing done, processing the result
-//
 export interface McpxOpenAIStage {
   messages: ChatCompletionMessageParam[]
   index: number
   toolCallIndex?: number
   status: 'ready' | 'pending' | 'input_wait'
-  resultStatus: 'pending' | 'ready' | 'wait'
   response: ChatCompletion
 }
 
@@ -59,15 +46,13 @@ export class McpxOpenAI {
   #openai: OpenAI;
   #session: Session;
   #tools: OpenAITool[];
-  #forceTool?: string
   #logger: Logger;
 
-  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], forceTool: string|undefined, logger: Logger) {
+  private constructor(openai: OpenAI, session: Session, tools: OpenAITool[], logger: Logger) {
     this.#openai = openai
     this.#session = session
     this.#logger = logger
     this.#tools = tools
-    this.#forceTool = forceTool
   }
 
   async close() {
@@ -88,24 +73,10 @@ export class McpxOpenAI {
         : opts.session
     )
 
-    let mcpTools: any[]
-    if (Array.isArray(opts.tools)) {
-        mcpTools = opts.tools
-    } else {
-      const tools = await session.handleListTools({} as any, {} as any)
-      mcpTools = tools.tools
-    }
+    const { tools: mcpTools } = await session.handleListTools({} as any, {} as any)
+    const tools = mcpTools.map(mcpxToolToOpenai)
 
-    const tools = mcpTools.map((tool) => ({
-      type: 'function' as const,
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-      },
-    }))
-
-    return new McpxOpenAI(openai, session, tools, opts.forceTool, logger || (session.logger as any) || pino({ level: 'silent' }))
+    return new McpxOpenAI(openai, session, tools, logger || (session.logger as any) || pino({ level: 'silent' }))
   }
 
   async chatCompletionCreate(
@@ -153,7 +124,6 @@ export class McpxOpenAI {
       messages,
       index: messageIdx,
       status: 'pending',
-      resultStatus: 'wait',
       response: {} as ChatCompletion,
     }
 
@@ -181,26 +151,27 @@ export class McpxOpenAI {
           messages: stage.messages,
           index: stage.index,
           response: stage.response,
-          done: stage.status === 'ready' && stage.resultStatus === 'ready',
+          done: stage.status === 'ready',
         }
     }
   }
 
-  async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions): Promise<McpxOpenAIStage> {
-    const { response, messages, index, status, resultStatus } = stage
+  async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
+    const { response, messages, index, status } = stage
 
     // Read the current message in the batch.
     switch (status) {
       case 'pending': {
-        let response: ChatCompletion
+        const tools = config.tools?.map(mcpxToolToOpenai) || this.#tools
         const tool_choice =
-          this.#forceTool && resultStatus === 'pending' ? { type: 'function', function: { name: this.#forceTool } } : 'auto'
+          config.tool_choice ? { type: 'function', function: { name: config.tool_choice } } : 'auto'
+        let response: ChatCompletion
         try {
           response = await this.#openai.chat.completions.create({
             ...config,
-            ...(this.#tools.length ? { tools: this.#tools } : {}),
+            tools,
+            tool_choice,
             messages,
-            tool_choice
           }, requestOptions)
         } catch (err: any) {
           throw ToolSchemaError.parse(err, this.#tools)
@@ -210,13 +181,7 @@ export class McpxOpenAI {
         const choice = response.choices.slice(-1)[0]
         if (!choice) {
           this.logFinalMessage(index, messages)
-          let statusReady: any = 'ready'
-          let resultReady: any = 'ready'
-          if (resultStatus === 'wait') {
-            statusReady = 'pending'
-            resultReady = 'pending'
-          }
-          return { response, messages, index, status: statusReady, resultStatus: resultReady }
+          return { response, messages, index, status: 'ready' }
         }
 
         const message = choice.message
@@ -224,20 +189,14 @@ export class McpxOpenAI {
         // There are no tool calls.
         if (!message.tool_calls) {
           this.logFinalMessage(index, messages)
-          let statusReady: any = 'ready'
-          let resultReady: any = 'ready'
-          if (resultStatus === 'wait') {
-            statusReady = 'pending'
-            resultReady = 'pending'
-          }
-          return { response, messages, index, status: statusReady, resultStatus: resultReady }
+          return { response, messages, index, status: 'ready' }
         }
 
         let messageIdx = index
         for (; messageIdx < messages.length; ++messageIdx) {
           this.#logger.info({ exchange: messages[messageIdx] }, 'message')
         }
-        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0, resultStatus }
+        return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
       case 'input_wait': {
         const toolCallIndex = stage.toolCallIndex!
@@ -248,18 +207,15 @@ export class McpxOpenAI {
         const tool = toolCalls[toolCallIndex]
 
         if (tool.type !== 'function') {
-          return { response, messages, index, status: 'pending', resultStatus }
+          return { response, messages, index, status: 'pending' }
         }
 
         messages.push(await this.call(tool))
         const nextTool = toolCallIndex + 1
         if (nextTool >= toolCalls.length) {
-          if (resultStatus === 'pending') {
-            return { response, messages, index, status: 'pending', resultStatus: 'ready' }
-          }
-          return { response, messages, index, status: 'pending', resultStatus }
+          return { response, messages, index, status: 'pending' }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool, resultStatus }
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
         }
       }
       default:
@@ -293,6 +249,17 @@ export class McpxOpenAI {
         tool_call_id: tool.id,
       }
     }
+  }
+}
+
+function mcpxToolToOpenai(tool: any) {
+  return {
+    type: 'function' as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+    },
   }
 }
 
