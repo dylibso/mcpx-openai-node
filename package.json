@@ -1,6 +1,6 @@
 {
   "name": "@dylibso/mcpx-openai",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "description": "Connect your mcp.run tools to OpenAI",
   "type": "module",
   "main": "dist/index.js",
