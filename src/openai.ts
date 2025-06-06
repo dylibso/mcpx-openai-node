@@ -74,7 +74,14 @@ export class McpxOpenAI {
     )
 
     const { tools: mcpTools } = await session.handleListTools({} as any, {} as any)
-    const tools = mcpTools.map(mcpxToolToOpenai)
+    const tools = mcpTools.map((tool) => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }))
 
     return new McpxOpenAI(openai, session, tools, logger || (session.logger as any) || pino({ level: 'silent' }))
   }
@@ -162,15 +169,11 @@ export class McpxOpenAI {
     // Read the current message in the batch.
     switch (status) {
       case 'pending': {
-        const tools = config.tools?.map(mcpxToolToOpenai) || this.#tools
-        const tool_choice =
-          config.tool_choice ? { type: 'function', function: { name: config.tool_choice } } : 'auto'
         let response: ChatCompletion
         try {
           response = await this.#openai.chat.completions.create({
+            ...(this.#tools.length ? { tools: this.#tools } : {}),
             ...config,
-            tools,
-            tool_choice,
             messages,
           }, requestOptions)
         } catch (err: any) {
@@ -199,15 +202,23 @@ export class McpxOpenAI {
         return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
       case 'input_wait': {
-        const { tool, toolCallIndex, toolCallLength, toolCallId } = this.parseNextToolCall(stage)
-        if (!tool) {
+        const toolCallIndex = stage.toolCallIndex!
+        const inputMessage = messages[index-1]
+
+        const message = inputMessage as ChatCompletionMessage
+        const toolCalls = message.tool_calls!
+        const tool = toolCalls[toolCallIndex]
+
+        if (tool.type !== 'function') {
           return { response, messages, index, status: 'pending' }
         }
-        messages.push(await this.call(tool, toolCallId!))
-        if (toolCallIndex && toolCallIndex >= toolCallLength!) {
+
+        messages.push(await this.call(tool))
+        const nextTool = toolCallIndex + 1
+        if (nextTool >= toolCalls.length) {
           return { response, messages, index, status: 'pending' }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex }
+          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
         }
       }
       default:
@@ -215,67 +226,32 @@ export class McpxOpenAI {
     }
   }
 
-  parseNextToolCall(stage: McpxOpenAIStage) {
-    const { status, messages, index } = stage
-    if (status !== 'input_wait') {
-      throw new Error("Cannot parse next tool call: invalid status " + status)
-    }
-    const toolCallIndex = stage.toolCallIndex!
-    const inputMessage = messages[index-1]
-
-    const message = inputMessage as ChatCompletionMessage
-    const toolCalls = message.tool_calls!
-    const tool = toolCalls[toolCallIndex]
-
-    if (tool.type !== 'function') {
-      return {}
-    }
-
-    const nextTool = toolCallIndex + 1
-    return { tool: openAIToolCallToMcpxToolCall(tool), toolCallIndex: nextTool, toolCallLength: toolCalls.length, toolCallId: tool.id }
-  }
-
-  private async call(convertedToolCall: any, toolCallId: string): Promise<ChatCompletionMessageParam> {
+  private async call(tool: ChatCompletionMessageToolCall): Promise<ChatCompletionMessageParam> {
     try {
       const abortcontroller = new AbortController()
       const result = await this.#session.handleCallTool(
-        convertedToolCall,
+        {
+          method: 'tools/call',
+          params: {
+            name: tool.function.name,
+            arguments: JSON.parse(tool.function.arguments),
+          },
+        },
         { signal: abortcontroller.signal },
       )
 
       return {
         role: 'tool',
         content: JSON.stringify(result),
-        tool_call_id: toolCallId,
+        tool_call_id: tool.id,
       }
     } catch (err: any) {
       return {
         role: 'tool',
         content: err.toString(),
-        tool_call_id: toolCallId,
+        tool_call_id: tool.id,
       }
     }
-  }
-}
-
-function mcpxToolToOpenai(tool: any) {
-  return {
-    type: 'function' as const,
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema,
-    },
-  }
-}
-
-function openAIToolCallToMcpxToolCall(tool: ChatCompletionMessageToolCall): any {
-  return {
-    method: 'tools/call',
-    params: {
-      name: tool.function.name,
-      arguments: JSON.parse(tool.function.arguments),
-    },
   }
 }
 
