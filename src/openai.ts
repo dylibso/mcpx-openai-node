@@ -202,24 +202,24 @@ export class McpxOpenAI {
         return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
       case 'input_wait': {
-        const toolCallIndex = stage.toolCallIndex!
+        let toolCallIndex = stage.toolCallIndex!
         const inputMessage = messages[index-1]
 
         const message = inputMessage as ChatCompletionMessage
         const toolCalls = message.tool_calls!
-        const tool = toolCalls[toolCallIndex]
+        let promises: Promise<ChatCompletionMessageParam>[] = []
+        for (; toolCallIndex < toolCalls.length; ++toolCallIndex) {
+          const tool = toolCalls[toolCallIndex]
+          if (tool.type !== 'function') {
+            return { response, messages, index, status: 'pending' }
+          }
 
-        if (tool.type !== 'function') {
-          return { response, messages, index, status: 'pending' }
+          promises.push(this.call(tool))
         }
 
-        messages.push(await this.call(tool))
-        const nextTool = toolCallIndex + 1
-        if (nextTool >= toolCalls.length) {
-          return { response, messages, index, status: 'pending' }
-        } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
-        }
+        const results = await Promise.all(promises)
+        messages.push(...results)
+        return { response, messages, index, status: 'pending' }
       }
       default:
         throw new Error("Illegal status: " + status)
