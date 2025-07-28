@@ -164,6 +164,9 @@ export class McpxOpenAI {
   }
 
   async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
+    const concurrentToolCalls = !!config['concurrent_tool_calls']
+    delete config['concurrent_tool_calls']
+
     const { response, messages, index, status } = stage
 
     // Read the current message in the batch.
@@ -202,23 +205,43 @@ export class McpxOpenAI {
         return { response, messages, index: messageIdx, status: 'input_wait', toolCallIndex: 0 }
       }
       case 'input_wait': {
-        const toolCallIndex = stage.toolCallIndex!
-        const inputMessage = messages[index-1]
+        let toolCallIndex = stage.toolCallIndex!
+        const inputMessage = messages[index - 1]
 
         const message = inputMessage as ChatCompletionMessage
         const toolCalls = message.tool_calls!
-        const tool = toolCalls[toolCallIndex]
 
-        if (tool.type !== 'function') {
-          return { response, messages, index, status: 'pending' }
-        }
+        if (concurrentToolCalls) {
+          // Exhaust all tool calls in one turn
+          let promises: Promise<ChatCompletionMessageParam>[] = []
+          for (; toolCallIndex < toolCalls.length; ++toolCallIndex) {
+            const tool = toolCalls[toolCallIndex]
+            if (tool.type !== 'function') {
+              return { response, messages, index, status: 'pending' }
+            }
 
-        messages.push(await this.call(tool))
-        const nextTool = toolCallIndex + 1
-        if (nextTool >= toolCalls.length) {
+            promises.push(this.call(tool))
+          }
+
+          const results = await Promise.all(promises)
+          messages.push(...results)
           return { response, messages, index, status: 'pending' }
         } else {
-          return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
+          // Otherwise evaluate one tool call each turn.
+          const tool = toolCalls[toolCallIndex]
+
+          if (tool.type !== 'function') {
+            return { response, messages, index, status: 'pending' }
+          }
+
+          messages.push(await this.call(tool))
+          const nextTool = toolCallIndex + 1
+          if (nextTool >= toolCalls.length) {
+            return { response, messages, index, status: 'pending' }
+          } else {
+            return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
+          }
+
         }
       }
       default:
