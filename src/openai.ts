@@ -164,6 +164,9 @@ export class McpxOpenAI {
   }
 
   async next(stage: McpxOpenAIStage, config: any, requestOptions?: RequestOptions<unknown>): Promise<McpxOpenAIStage> {
+    const concurrentToolCalls = !!config['concurrent_tool_calls']
+    delete config['concurrent_tool_calls']
+
     const { response, messages, index, status } = stage
 
     // Read the current message in the batch.
@@ -203,23 +206,43 @@ export class McpxOpenAI {
       }
       case 'input_wait': {
         let toolCallIndex = stage.toolCallIndex!
-        const inputMessage = messages[index-1]
+        const inputMessage = messages[index - 1]
 
         const message = inputMessage as ChatCompletionMessage
         const toolCalls = message.tool_calls!
-        let promises: Promise<ChatCompletionMessageParam>[] = []
-        for (; toolCallIndex < toolCalls.length; ++toolCallIndex) {
+
+        if (concurrentToolCalls) {
+          // Exhaust all tool calls in one turn
+          let promises: Promise<ChatCompletionMessageParam>[] = []
+          for (; toolCallIndex < toolCalls.length; ++toolCallIndex) {
+            const tool = toolCalls[toolCallIndex]
+            if (tool.type !== 'function') {
+              return { response, messages, index, status: 'pending' }
+            }
+
+            promises.push(this.call(tool))
+          }
+
+          const results = await Promise.all(promises)
+          messages.push(...results)
+          return { response, messages, index, status: 'pending' }
+        } else {
+          // Otherwise evaluate one tool call each turn.
           const tool = toolCalls[toolCallIndex]
+
           if (tool.type !== 'function') {
             return { response, messages, index, status: 'pending' }
           }
 
-          promises.push(this.call(tool))
-        }
+          messages.push(await this.call(tool))
+          const nextTool = toolCallIndex + 1
+          if (nextTool >= toolCalls.length) {
+            return { response, messages, index, status: 'pending' }
+          } else {
+            return { response, messages, index, status: 'input_wait', toolCallIndex: nextTool }
+          }
 
-        const results = await Promise.all(promises)
-        messages.push(...results)
-        return { response, messages, index, status: 'pending' }
+        }
       }
       default:
         throw new Error("Illegal status: " + status)
